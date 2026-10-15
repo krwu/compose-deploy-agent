@@ -70,6 +70,9 @@ func (server *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	if !server.authorizeService(w, r, req.Service) {
 		return
 	}
+	if !server.consumeOIDCToken(w, r) {
+		return
+	}
 
 	var deployID string
 	var err error
@@ -79,6 +82,7 @@ func (server *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		deployID, _, err = server.deployer.StartDeploy(r.Context(), req.Service, req.Tag)
 	}
 	if err != nil {
+		server.releaseOIDCToken(r)
 		server.writeStartDeployError(w, err)
 		return
 	}

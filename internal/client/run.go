@@ -65,9 +65,53 @@ func RunLocal(ctx context.Context, socketPath string, opts Options) Summary {
 	return result
 }
 
-// run implements the shared submit/poll flow used by both Run and RunLocal.
+// RunOIDC submits a deploy request to the agent's OIDC listener with a
+// GitHub Actions OIDC bearer token (opts.Token) and polls until a terminal
+// result. No client certificate is used; the server certificate is
+// authenticated through pin.
+func RunOIDC(ctx context.Context, opts Options, pin ServerPin) Summary {
+	opts = opts.withDefaults()
+	summary := Summary{
+		Service: opts.Service,
+		Tag:     opts.Tag,
+		Digest:  opts.Digest,
+	}
+	if opts.Token == nil {
+		return fail(summary, ExitRequestFailed, "no OIDC token source configured")
+	}
+	httpClient, err := newPinnedHTTPClient(pin, opts.Endpoint)
+	if err != nil {
+		return fail(summary, ExitRequestFailed, fmt.Sprintf("build http client: %v", err))
+	}
+	return run(ctx, httpClient, opts, summary)
+}
+
+// newRequest builds a request against opts.Endpoint, adding the OIDC
+// bearer token when opts.Token is set.
+func newRequest(ctx context.Context, opts Options, method, path string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, opts.Endpoint+path, body)
+	if err != nil {
+		return nil, err
+	}
+	if opts.Token != nil {
+		token, err := opts.Token(ctx)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	return req, nil
+}
+
+// run implements the shared submit/poll flow used by Run, RunOIDC and RunLocal.
 func run(ctx context.Context, httpClient *http.Client, opts Options, summary Summary) Summary {
 	deadline := time.Now().Add(opts.PollTimeout)
+	if opts.Token != nil {
+		_, err := opts.Token(ctx)
+		if err != nil {
+			return fail(summary, ExitRequestFailed, err.Error())
+		}
+	}
 
 	deployID, exitCode, msg := submit(ctx, httpClient, opts, deadline)
 	if exitCode != exitAccepted {
@@ -96,7 +140,7 @@ func submit(ctx context.Context, httpClient *http.Client, opts Options, deadline
 
 	for {
 		reqCtx, cancel := context.WithTimeout(ctx, opts.ConnectTimeout)
-		req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, opts.Endpoint+"/v1/deploy", bytes.NewReader(body))
+		req, err := newRequest(reqCtx, opts, http.MethodPost, "/v1/deploy", bytes.NewReader(body))
 		if err == nil {
 			req.Header.Set("Content-Type", "application/json")
 		}
@@ -129,7 +173,7 @@ func submit(ctx context.Context, httpClient *http.Client, opts Options, deadline
 			}
 			time.Sleep(opts.ConnectBackoff)
 			continue
-		case http.StatusBadRequest, http.StatusForbidden, http.StatusNotFound:
+		case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
 			return "", ExitRequestFailed, readErrorMessage(resp)
 		default:
 			return "", ExitDeployFailed, readErrorMessage(resp)
@@ -154,8 +198,11 @@ func poll(ctx context.Context, httpClient *http.Client, job pollJob) Summary {
 		}
 
 		reqCtx, cancel := context.WithTimeout(ctx, opts.ConnectTimeout)
-		req, _ := http.NewRequestWithContext(reqCtx, http.MethodGet, opts.Endpoint+"/v1/deploys/"+job.deployID, nil)
-		resp, err := httpClient.Do(req)
+		req, err := newRequest(reqCtx, opts, http.MethodGet, "/v1/deploys/"+job.deployID, nil)
+		var resp *http.Response
+		if err == nil {
+			resp, err = httpClient.Do(req)
+		}
 		cancel()
 
 		if err != nil {

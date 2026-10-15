@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/krwu/compose-deploy-agent/internal/deployer"
+	"github.com/krwu/compose-deploy-agent/internal/oidc"
 	"github.com/krwu/compose-deploy-agent/internal/store"
 )
 
@@ -56,6 +57,7 @@ type Server struct {
 	startedAt time.Time
 	timeouts  serverTimeouts
 	maxConns  int
+	verifier  tokenVerifier
 }
 
 // New returns a Server ready to build handlers for.
@@ -81,6 +83,14 @@ func New(dep *deployer.Deployer, s *store.Store, version string) *Server {
 func (s *Server) SetMaxConnections(n int) {
 	if n >= 1 {
 		s.maxConns = n
+	}
+}
+
+// EnableOIDC installs the token verifier used by the OIDC listener. It
+// must be called before OIDCListener/ServeOIDCOn.
+func (s *Server) EnableOIDC(v *oidc.Verifier) {
+	if v != nil {
+		s.verifier = v
 	}
 }
 
@@ -140,6 +150,39 @@ func (server *Server) ServeMainOn(ctx context.Context, rawLn net.Listener, tlsCo
 		ln.Close()
 		return nil
 	}
+}
+
+// OIDCListener starts the OIDC listener on addr and blocks until ctx is
+// cancelled or the listener errors. See ServeOIDCOn.
+func (s *Server) OIDCListener(ctx context.Context, addr string, tlsConfig *tls.Config) error {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	return s.ServeOIDCOn(ctx, ln, tlsConfig)
+}
+
+// ServeOIDCOn serves the /v1/* routes on a separate TLS listener that
+// authenticates with GitHub Actions OIDC bearer tokens instead of client
+// certificates. The agent terminates TLS itself with the same server
+// certificate; no client certificate is requested. tlsConfig is cloned, so
+// the mTLS listener's RequireAndVerifyClientCert is never touched. The
+// listener gets the same timeouts, body limit and connection cap as the
+// mTLS one, but its own cap.
+func (server *Server) ServeOIDCOn(ctx context.Context, rawLn net.Listener, tlsConfig *tls.Config) error {
+	if server.verifier == nil {
+		rawLn.Close()
+		return errors.New("OIDC listener started without a verifier")
+	}
+	oidcTLS := tlsConfig.Clone()
+	oidcTLS.ClientAuth = tls.NoClientCert
+	oidcTLS.ClientCAs = nil
+	ln := newLimitListener(rawLn, server.maxConns)
+	srv := server.newHTTPServer(oidcMiddleware(server.verifier)(server.mainRouter()))
+	srv.TLSConfig = oidcTLS
+	return serveUntilDone(ctx, srv, func() error {
+		return srv.Serve(tls.NewListener(ln, oidcTLS))
+	})
 }
 
 // HealthzListener starts the plain-HTTP healthz listener, always bound to

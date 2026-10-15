@@ -42,6 +42,9 @@ type Service struct {
 	// PostDeploy, if set, is a fixed command run inside the container after
 	// the new version passes readiness. A failure rolls the deploy back.
 	PostDeploy *PostDeploy `yaml:"post_deploy,omitempty"`
+	// OIDC lists the GitHub Actions OIDC bindings allowed to act on this
+	// service through the OIDC listener. Empty: OIDC tokens are refused.
+	OIDC []OIDCRule `yaml:"oidc,omitempty"`
 }
 
 // ComposeFile returns the absolute path to the compose file.
@@ -71,6 +74,8 @@ type Manifest struct {
 	// which services. Nil keeps the historical behavior: any registered,
 	// non-revoked certificate may deploy any service.
 	Access *Access `yaml:"access,omitempty"`
+	// OIDC configures GitHub Actions OIDC authentication (see oidc.go).
+	OIDC *OIDCSettings `yaml:"oidc,omitempty"`
 }
 
 // Lookup returns the service entry for name, and whether it exists. This is
@@ -137,6 +142,10 @@ func Parse(data []byte) (*Manifest, error) {
 	}
 
 	err := m.validateAccess()
+	if err != nil {
+		return nil, err
+	}
+	err = m.validateOIDC()
 	if err != nil {
 		return nil, err
 	}

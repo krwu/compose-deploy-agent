@@ -3,6 +3,7 @@ package main
 import (
 	"cmp"
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -42,7 +43,9 @@ func runServe(args []string) error {
 	bindAddr := fs.String("bind", "", "address:port for the mTLS listener, e.g. 10.0.0.5:8866")
 	healthzAddr := fs.String("healthz-bind", defaultHealthzAddr, "address:port for the plain-HTTP healthz listener")
 	socketFlag := fs.String("socket", "", socketFlagUsage)
-	maxConns := fs.Int("max-conns", server.DefaultMaxConnections, "max open connections on --bind")
+	maxConns := fs.Int("max-conns", server.DefaultMaxConnections, "max open connections on --bind (and on --oidc-listen)")
+	oidcListen := fs.String("oidc-listen", "", "address:port for the GitHub Actions OIDC listener (TLS, bearer token, "+
+		"no client certificate); empty disables OIDC")
 	testOnly := fs.Bool("t", false, "test the configuration and exit, without taking the instance lock or opening the database")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -55,15 +58,12 @@ func runServe(args []string) error {
 	if err != nil {
 		return err
 	}
+	err = checkOIDCListen(cfg.manifest, *oidcListen)
+	if err != nil {
+		return err
+	}
 	if *testOnly {
-		notAfter, err := testServeConfig(cfg, *bindAddr)
-		if err != nil {
-			return err
-		}
-		fmt.Printf("deploy-agent: configuration test is successful (%d services, server certificate valid until %s)\n",
-			len(cfg.manifest.Services), notAfter.Format(time.DateTime))
-		printAccessWarnings(cfg.manifest)
-		return nil
+		return runServeTest(cfg, *bindAddr, *oidcListen)
 	}
 
 	release, err := singleton.Lock(paths.LockPath(*dataDir))
@@ -87,25 +87,64 @@ func runServe(args []string) error {
 		slog.Warn("marked in-progress deploys as interrupted after restart", "count", n)
 	}
 
-	logAccessWarnings(cfg.manifest)
+	logAccessWarnings(cfg.manifest, *oidcListen)
 	runReverseCalibration(context.Background(), dep, cfg.manifest)
 	logExpiringCerts(st)
 
 	srv := server.New(dep, st, version)
 	srv.SetMaxConnections(*maxConns)
+	err = enableOIDC(srv, cfg.manifest, *oidcListen)
+	if err != nil {
+		return err
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	go checkExpiringCertsDaily(ctx, st)
+	go purgeExpiredJTIs(ctx, st)
 
-	socketPath := cmp.Or(*socketFlag, paths.SocketPath(*dataDir))
-	errCh := make(chan error, 3)
-	go func() { errCh <- srv.MainListener(ctx, *bindAddr, tlsConfig) }()
-	go func() { errCh <- srv.HealthzListener(ctx, *healthzAddr) }()
-	go func() { errCh <- srv.LocalListener(ctx, socketPath) }()
+	return serveListeners(ctx, srv, tlsConfig, listenAddrs{
+		bind:    *bindAddr,
+		healthz: *healthzAddr,
+		socket:  cmp.Or(*socketFlag, paths.SocketPath(*dataDir)),
+		oidc:    *oidcListen,
+	})
+}
 
-	slog.Info("deploy-agent serve started", "bind", *bindAddr, "healthz", *healthzAddr, "socket", socketPath, "version", version)
+// runServeTest implements `serve -t` after the configuration has loaded.
+func runServeTest(cfg *serveConfig, bindAddr, oidcListen string) error {
+	notAfter, err := testServeConfig(cfg, bindAddr)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("deploy-agent: configuration test is successful (%d services, server certificate valid until %s)\n",
+		len(cfg.manifest.Services), notAfter.Format(time.DateTime))
+	printAccessWarnings(cfg.manifest, oidcListen)
+	return nil
+}
+
+// listenAddrs are the addresses serve listens on; an empty oidc disables
+// the OIDC listener.
+type listenAddrs struct {
+	bind    string
+	healthz string
+	socket  string
+	oidc    string
+}
+
+// serveListeners runs every listener until ctx is done or one fails.
+func serveListeners(ctx context.Context, srv *server.Server, tlsConfig *tls.Config, addrs listenAddrs) error {
+	errCh := make(chan error, 4)
+	go func() { errCh <- srv.MainListener(ctx, addrs.bind, tlsConfig) }()
+	go func() { errCh <- srv.HealthzListener(ctx, addrs.healthz) }()
+	go func() { errCh <- srv.LocalListener(ctx, addrs.socket) }()
+	if addrs.oidc != "" {
+		go func() { errCh <- srv.OIDCListener(ctx, addrs.oidc, tlsConfig) }()
+	}
+
+	slog.Info("deploy-agent serve started", "bind", addrs.bind, "healthz", addrs.healthz, "socket", addrs.socket,
+		"oidc_listen", addrs.oidc, "version", version)
 
 	select {
 	case err := <-errCh:
@@ -155,15 +194,15 @@ func checkExpiringCertsDaily(ctx context.Context, st *store.Store) {
 
 // logAccessWarnings logs every services.yaml access configuration under
 // which some client certificate may deploy every service.
-func logAccessWarnings(manifest *config.Manifest) {
-	for _, warning := range manifest.AccessWarnings() {
+func logAccessWarnings(manifest *config.Manifest, oidcListen string) {
+	for _, warning := range append(manifest.AccessWarnings(), oidcStartupWarnings(manifest, oidcListen)...) {
 		slog.Warn("client certificate access is not restricted", "detail", warning)
 	}
 }
 
 // printAccessWarnings is logAccessWarnings for `serve -t`.
-func printAccessWarnings(manifest *config.Manifest) {
-	for _, warning := range manifest.AccessWarnings() {
+func printAccessWarnings(manifest *config.Manifest, oidcListen string) {
+	for _, warning := range append(manifest.AccessWarnings(), oidcStartupWarnings(manifest, oidcListen)...) {
 		fmt.Fprintf(os.Stderr, "deploy-agent: warning: %s\n", warning)
 	}
 }

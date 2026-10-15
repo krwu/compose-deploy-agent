@@ -44,3 +44,24 @@ services:
 #   clients:
 #     ci-web:
 #       services: [web]
+
+# Optional: GitHub Actions OIDC (needs `serve --oidc-listen`, see
+# docs/auth_oidc.md). The audience is agent-specific and must match the
+# workflow's --oidc-audience; GitHub's default https://github.com/<owner> is
+# refused. Each service may list rules; every configured field of one rule
+# must equal the token claim. pull_request_target and workflow_run are
+# always refused.
+# oidc:
+#   audience: https://deploy.img.ntest.top
+#
+# services:
+#   main:
+#     ...
+#     oidc:
+#       - repository_id: "123456789"        # required, numeric
+#         repository_owner_id: "987654321"  # required, numeric
+#         repository: kairee/img-webdn      # optional second check
+#         ref: refs/heads/main              # required, exact
+#         event_name: [push]                # required allowlist
+#         environment: preview-main         # optional
+#         job_workflow_ref: kairee/img-webdn/.github/workflows/deploy.yml@refs/heads/main  # optional

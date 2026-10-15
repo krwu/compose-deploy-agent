@@ -19,6 +19,7 @@ import (
 	"github.com/krwu/compose-deploy-agent/internal/credential"
 	"github.com/krwu/compose-deploy-agent/internal/deployer"
 	"github.com/krwu/compose-deploy-agent/internal/dockerx"
+	"github.com/krwu/compose-deploy-agent/internal/oidc/oidctest"
 	"github.com/krwu/compose-deploy-agent/internal/store"
 	"github.com/krwu/compose-deploy-agent/internal/tlsconf"
 )
@@ -29,11 +30,12 @@ import (
 // registration/revocation (internal/server middleware), and the deploy
 // allowlist (internal/deployer).
 type testHarness struct {
-	addr   string
-	mgr    *ca.Manager
-	store  *store.Store
-	cancel context.CancelFunc
-	errCh  chan error
+	addr     string
+	oidcAddr string
+	mgr      *ca.Manager
+	store    *store.Store
+	cancel   context.CancelFunc
+	errCh    chan error
 }
 
 // harnessOptions customizes startHarnessWith. Zero values keep the
@@ -42,6 +44,10 @@ type harnessOptions struct {
 	manifest *config.Manifest
 	timeouts *serverTimeouts
 	maxConns int
+	// dataDir reuses an existing data directory (restart tests).
+	dataDir string
+	// oidcIssuer, if set, also starts the OIDC listener trusting it.
+	oidcIssuer *oidctest.Issuer
 }
 
 func startHarness(t *testing.T) *testHarness {
@@ -52,10 +58,16 @@ func startHarness(t *testing.T) *testHarness {
 func startHarnessWith(t *testing.T, opts harnessOptions) *testHarness {
 	t.Helper()
 
-	dataDir := t.TempDir()
+	dataDir := opts.dataDir
+	if dataDir == "" {
+		dataDir = t.TempDir()
+	}
 	mgr := ca.NewManager(dataDir)
-	if err := mgr.Init([]string{"127.0.0.1"}); err != nil {
-		t.Fatalf("ca init: %v", err)
+	if !mgr.Initialized() {
+		err := mgr.Init([]string{"127.0.0.1"})
+		if err != nil {
+			t.Fatalf("ca init: %v", err)
+		}
 	}
 
 	st, err := store.Open(filepath.Join(dataDir, "agent.db"))
@@ -104,13 +116,17 @@ func startHarnessWith(t *testing.T, opts harnessOptions) *testHarness {
 	go func() { errCh <- srv.ServeMainOn(ctx, ln, tlsConfig) }()
 	t.Cleanup(cancel)
 
-	return &testHarness{
+	h := &testHarness{
 		addr:   addr,
 		mgr:    mgr,
 		store:  st,
 		cancel: cancel,
 		errCh:  errCh,
 	}
+	if opts.oidcIssuer != nil {
+		h.oidcAddr = startOIDCListener(t, ctx, srv, opts, tlsConfig)
+	}
+	return h
 }
 
 func (h *testHarness) issueClient(t *testing.T, name string) credential.Bundle {

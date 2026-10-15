@@ -40,8 +40,13 @@ func (m *Manifest) ClientAllowed(name, fingerprint, service string) bool {
 }
 
 // AccessWarnings describes configurations in which some certificate can
-// deploy every service; serve logs them at startup and `serve -t` prints them.
+// deploy every service, or an OIDC rule is broader than recommended; serve
+// logs them at startup and `serve -t` prints them.
 func (m *Manifest) AccessWarnings() []string {
+	return append(m.certAccessWarnings(), m.oidcWarnings()...)
+}
+
+func (m *Manifest) certAccessWarnings() []string {
 	switch {
 	case m.Access == nil || (len(m.Access.Clients) == 0 && !m.Access.RequireBinding):
 		return []string{"access.clients is not configured: " +
@@ -51,7 +56,7 @@ func (m *Manifest) AccessWarnings() []string {
 			"may deploy every service"}
 	case len(m.Access.Clients) == 0:
 		return []string{"access.require_binding is true but access.clients is empty: " +
-			"every mTLS request will be denied; only the local unix socket can deploy"}
+			"every mTLS request will be denied; only the local unix socket (and OIDC, if enabled) can deploy"}
 	default:
 		return nil
 	}

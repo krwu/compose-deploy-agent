@@ -22,6 +22,7 @@ func runDeploy(args []string) error {
 	digest := stringFlag(fs, "digest", "d", "", "target image digest sha256:<64 hex> (services with image_ref: digest)")
 	credentialEnv := fs.String("credential-env", defaultCredentialEnv, "environment variable holding the PEM credential bundle")
 	pollTimeout := fs.Duration("poll-timeout", client.DefaultPollTimeout, "total time budget for submit retries and status polling")
+	oidcFlags := registerOIDCFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -32,22 +33,23 @@ func runDeploy(args []string) error {
 	if err != nil {
 		return err
 	}
+	opts := client.Options{
+		Endpoint:    *endpoint,
+		Service:     *service,
+		Tag:         *tag,
+		Digest:      *digest,
+		PollTimeout: *pollTimeout,
+	}
+	if oidcFlags.enabled() {
+		return runDeployOIDC(opts, oidcFlags)
+	}
 
 	credentialPEM := os.Getenv(*credentialEnv)
 	if credentialPEM == "" {
 		return fmt.Errorf("environment variable %s is empty; the pipeline must inject the credential bundle before calling `deploy-agent deploy`", *credentialEnv)
 	}
-
-	summary := client.Run(context.Background(), client.Options{
-		Endpoint:      *endpoint,
-		Service:       *service,
-		Tag:           *tag,
-		Digest:        *digest,
-		CredentialPEM: []byte(credentialPEM),
-		PollTimeout:   *pollTimeout,
-	})
-
-	return emitSummary(summary)
+	opts.CredentialPEM = []byte(credentialPEM)
+	return emitSummary(client.Run(context.Background(), opts))
 }
 
 // requireOneRef checks that exactly one of --tag and --digest was given.

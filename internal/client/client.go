@@ -37,11 +37,14 @@ const (
 
 // Options configures a single Run invocation.
 type Options struct {
-	Endpoint       string
-	Service        string
-	Tag            string
-	Digest         string
-	CredentialPEM  []byte
+	Endpoint      string
+	Service       string
+	Tag           string
+	Digest        string
+	CredentialPEM []byte
+	// Token, if set, supplies the OIDC bearer token sent with every
+	// request (RunOIDC).
+	Token          TokenSource
 	ConnectTimeout time.Duration
 	PollInterval   time.Duration
 	PollTimeout    time.Duration

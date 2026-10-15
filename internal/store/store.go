@@ -93,6 +93,10 @@ func (store *Store) migrate() error {
 			expires_at  TEXT NOT NULL,
 			revoked_at  TEXT
 		)`,
+		`CREATE TABLE IF NOT EXISTS oidc_jti (
+			jti        TEXT PRIMARY KEY,
+			expires_at INTEGER NOT NULL
+		)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := store.db.Exec(stmt); err != nil {

@@ -58,7 +58,7 @@ ci: 用 GitHub Actions 发布 Release
 
 - 从 `main` 拉分支，分支名跟着内容走，比如 `fix/ca-reissue-san`
 - 描述里写清楚改了什么、为什么改、怎么验证的。改了行为就附上运行输出
-- 涉及用户可见变化的（新增参数、退出码、清单字段、接口），同步改 [README.md](./README.md)
+- 涉及用户可见变化的（新增参数、退出码、清单字段、接口），同步改 [README.md](./README.md) 或 [docs/](./docs/) 下对应的文档
 - 别往仓库里提交真实凭据：PEM 证书包、`serve.env`、`.db`、本机 `services.yaml`。`.gitignore` 已经挡掉了 `bin/`、`dist/` 和数据库文件，其余自己留意
 
 ## 协议

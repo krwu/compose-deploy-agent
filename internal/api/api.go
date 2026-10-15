@@ -70,6 +70,13 @@ const (
 	// ErrCertNotAllowed means the client certificate is not bound to the
 	// requested service (services.yaml access.clients).
 	ErrCertNotAllowed ErrorCode = "cert_not_allowed"
+	// ErrUnauthenticated means the OIDC listener received no valid bearer
+	// token (missing, malformed, bad signature, wrong iss/aud, expired, or
+	// already used). The response never says which check failed.
+	ErrUnauthenticated ErrorCode = "unauthenticated"
+	// ErrAccessDenied means a valid OIDC token is not bound to the
+	// requested service. The response never says which claim mismatched.
+	ErrAccessDenied ErrorCode = "access_denied"
 	// ErrBodyTooLarge means the request body exceeded the size limit.
 	ErrBodyTooLarge ErrorCode = "body_too_large"
 	// ErrAlreadyDeploying means another deploy of the service is in progress.

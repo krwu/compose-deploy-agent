@@ -8,6 +8,7 @@ import (
 
 	"github.com/krwu/compose-deploy-agent/internal/api"
 	"github.com/krwu/compose-deploy-agent/internal/credential"
+	"github.com/krwu/compose-deploy-agent/internal/oidc"
 	"github.com/krwu/compose-deploy-agent/internal/store"
 )
 
@@ -15,12 +16,26 @@ import (
 // client certificate, set by fingerprintMiddleware.
 type clientIdentityKey struct{}
 
-// clientIdentity identifies who sent a request: a registered client
-// certificate (mTLS) or, with local set, the local unix socket.
+// identityKind says which entry point authenticated a request. Each entry
+// point sets it explicitly; the zero value is never a valid identity.
+type identityKind int
+
+const (
+	// identityCert is a registered client certificate on the mTLS listener.
+	identityCert identityKind = iota + 1
+	// identityLocal is the local unix socket.
+	identityLocal
+	// identityOIDC is a verified GitHub Actions OIDC token on the OIDC listener.
+	identityOIDC
+)
+
+// clientIdentity identifies who sent a request. claims is set only for
+// identityOIDC.
 type clientIdentity struct {
+	kind        identityKind
 	name        string
 	fingerprint string
-	local       bool
+	claims      *oidc.Claims
 }
 
 // localIdentityMiddleware marks every request on the unix socket listener
@@ -29,8 +44,8 @@ type clientIdentity struct {
 func localIdentityMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := clientIdentity{
-			name:  "local",
-			local: true,
+			kind: identityLocal,
+			name: "local",
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), clientIdentityKey{}, id)))
 	})
@@ -79,6 +94,7 @@ func fingerprintMiddleware(s *store.Store) func(http.Handler) http.Handler {
 			}
 
 			id := clientIdentity{
+				kind:        identityCert,
 				name:        rec.Name,
 				fingerprint: fingerprint,
 			}
